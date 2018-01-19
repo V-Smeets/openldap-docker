@@ -1,0 +1,111 @@
+#!/bin/sh -x
+#
+etcDir="/etc/openldap"
+confFile="${etcDir}/slapd.conf"
+confDir="${etcDir}/slapd.d"
+
+options=""
+
+[ -d "${confDir}" ] || {
+	echo "Initializing the database"
+	suffix=`echo "${domain}" | sed \
+		-e 's/^\.*//' \
+		-e 's/\.\.*/./' \
+		-e 's/\.*$//' \
+		-e 's/^/dc=/' \
+		-e 's/\./,dc=/g'`
+	rootdn="cn=${rootName},${suffix}"
+	rootpw=`/usr/sbin/slappasswd -s "${rootPassword}"`
+
+	touch "${confFile}"
+	chown ldap:ldap "${confFile}"
+	chmod 640 "${confFile}"
+	cat <<EOT >"${confFile}"
+#
+# See slapd.conf(5) for details on configuration options.
+# This file should NOT be world readable.
+#
+include		/etc/openldap/schema/core.schema
+
+# Define global ACLs to disable default read access.
+
+# Do not enable referrals until AFTER you have a working directory
+# service AND an understanding of referrals.
+#referral	ldap://root.openldap.org
+
+# If you change this, adjust pidfile path also in runscript!
+pidfile		/run/openldap/slapd.pid
+argsfile	/run/openldap/slapd.args
+
+# Load dynamic backend modules:
+modulepath	/usr/lib/openldap
+moduleload	back_mdb.so
+# moduleload	back_hdb.so
+# moduleload	back_bbd.so
+# moduleload	back_ldap.so
+
+# Sample security restrictions
+#	Require integrity protection (prevent hijacking)
+#	Require 112-bit (3DES or better) encryption for updates
+#	Require 63-bit encryption for simple bind
+# security ssf=1 update_ssf=112 simple_bind=64
+
+# The userPassword by default can be changed
+# by the entry owning it if they are authenticated.
+# Others should not be able to see it, except the
+# admin entry below
+# These access lines apply to database #1 only
+access to attrs=userPassword
+        by dn="${rootdn}" write
+        by anonymous auth
+        by self write
+        by * none
+
+# Ensure read access to the base for things like
+# supportedSASLMechanisms.  Without this you may
+# have problems with SASL not knowing what
+# mechanisms are available and the like.
+# Note that this is covered by the 'access to *'
+# ACL below too but if you change that as people
+# are wont to do you'll still need this if you
+# want SASL (and possible other things) to work
+# happily.
+access to dn.base="" by * read
+
+# The admin dn has full write access, everyone else
+# can read everything.
+access to *
+        by dn="${rootdn}" write
+        by * read
+
+#######################################################################
+# MDB database definitions
+#######################################################################
+
+database	mdb
+maxsize		1073741824
+suffix		"${suffix}"
+rootdn		"${rootdn}"
+
+# Cleartext passwords, especially for the rootdn, should
+# be avoid.  See slappasswd(8) and slapd.conf(5) for details.
+# Use of strong authentication encouraged.
+rootpw		${rootpw}
+
+# The database directory MUST exist prior to running slapd AND 
+# should only be accessible by the slapd and slap tools.
+# Mode 700 recommended.
+directory	/var/lib/openldap/openldap-data
+
+# Indices to maintain
+index	objectClass	eq
+EOT
+
+	mkdir -p "${confDir}"
+	chown -R ldap:ldap "${confDir}"
+	options="${options} \
+		-f ${confFile} \
+		-F ${confDir}"
+}
+
+exec /usr/sbin/slapd ${options} "$@"
